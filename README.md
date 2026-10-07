@@ -16,7 +16,7 @@ inverted-file index narrows the search to a few lists.
 ## Install
 
 ```sh
-zig fetch --save <url or path of zig-pq>
+zig fetch --save git+https://github.com/guanchzhou/zig-pq
 ```
 
 ```zig
