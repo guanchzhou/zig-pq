@@ -33,6 +33,7 @@ pub const Index = struct {
     /// Adds `data` (row-major, width `d`) with ids `first_id, first_id + 1, ...`.
     pub fn add(ix: *Index, gpa: std.mem.Allocator, data: []const f32, first_id: u32) Error!void {
         const d = ix.d;
+        if (d == 0 or data.len % d != 0) return error.DimensionMismatch;
         const res = try gpa.alloc(f32, d);
         defer gpa.free(res);
         const code = try gpa.alloc(u8, ix.codebook.m);
@@ -50,6 +51,7 @@ pub const Index = struct {
 
 /// An empty index from given coarse centroids and a residual codebook (ownership moves in).
 pub fn fromParts(gpa: std.mem.Allocator, d: usize, coarse: []f32, codebook: pq.Codebook) Error!Index {
+    if (d == 0 or coarse.len == 0 or coarse.len % d != 0 or codebook.d != d) return error.InvalidShape;
     const nlist = coarse.len / d;
     const ids = try gpa.alloc(std.ArrayList(u32), nlist);
     errdefer gpa.free(ids);
@@ -63,6 +65,7 @@ pub fn fromParts(gpa: std.mem.Allocator, d: usize, coarse: []f32, codebook: pq.C
 
 /// Trains the coarse quantizer and the residual codebook on `data`, then adds it.
 pub fn build(gpa: std.mem.Allocator, data: []const f32, d: usize, nlist: usize, m: usize, nbits: u8, iters: usize, seed: u64) Error!Index {
+    if (d == 0 or nlist == 0 or data.len % d != 0) return error.InvalidShape;
     const n = data.len / d;
     const coarse = try gpa.alloc(f32, nlist * d);
     errdefer gpa.free(coarse);
@@ -87,9 +90,36 @@ fn hitBefore(_: void, a: Hit, b: Hit) bool {
     return a.dist2 < b.dist2 or (a.dist2 == b.dist2 and a.id < b.id);
 }
 
+fn siftUpMax(heap: []Hit, idx_in: usize) void {
+    var i = idx_in;
+    while (i > 0) {
+        const parent = (i - 1) / 2;
+        if (!hitBefore({}, heap[parent], heap[i])) break;
+        std.mem.swap(Hit, &heap[parent], &heap[i]);
+        i = parent;
+    }
+}
+
+fn siftDownMax(heap: []Hit, idx_in: usize) void {
+    var i = idx_in;
+    const n = heap.len;
+    while (true) {
+        var largest = i;
+        const left = 2 * i + 1;
+        const right = 2 * i + 2;
+        if (left < n and hitBefore({}, heap[largest], heap[left])) largest = left;
+        if (right < n and hitBefore({}, heap[largest], heap[right])) largest = right;
+        if (largest == i) break;
+        std.mem.swap(Hit, &heap[i], &heap[largest]);
+        i = largest;
+    }
+}
+
 /// The `out.len` nearest stored vectors by ADC distance among the `nprobe` nearest lists.
 pub fn search(gpa: std.mem.Allocator, ix: Index, q: []const f32, nprobe: usize, out: []Hit) Error!usize {
     const d = ix.d;
+    if (q.len != d) return error.DimensionMismatch;
+    if (out.len == 0 or nprobe == 0 or ix.nlist == 0) return 0;
     const Probe = struct { l: u32, v: f64 };
     const probes = try gpa.alloc(Probe, ix.nlist);
     defer gpa.free(probes);
@@ -103,20 +133,25 @@ pub fn search(gpa: std.mem.Allocator, ix: Index, q: []const f32, nprobe: usize, 
     defer gpa.free(tab);
     const res = try gpa.alloc(f32, d);
     defer gpa.free(res);
-    var hits: std.ArrayList(Hit) = .empty;
-    defer hits.deinit(gpa);
     const m = ix.codebook.m;
+    var count: usize = 0;
     for (probes[0..@min(nprobe, ix.nlist)]) |p| {
         for (res, q, ix.coarse[p.l * d ..][0..d]) |*r, a, c| r.* = a - c;
         ix.codebook.table(res, tab);
         for (ix.ids[p.l].items, 0..) |id, i| {
-            try hits.append(gpa, .{ .id = id, .dist2 = ix.codebook.adc(tab, ix.codes[p.l].items[i * m ..][0..m]) });
+            const cand: Hit = .{ .id = id, .dist2 = ix.codebook.adc(tab, ix.codes[p.l].items[i * m ..][0..m]) };
+            if (count < out.len) {
+                out[count] = cand;
+                siftUpMax(out[0 .. count + 1], count);
+                count += 1;
+            } else if (hitBefore({}, cand, out[0])) {
+                out[0] = cand;
+                siftDownMax(out[0..count], 0);
+            }
         }
     }
-    std.mem.sort(Hit, hits.items, {}, hitBefore);
-    const k = @min(out.len, hits.items.len);
-    @memcpy(out[0..k], hits.items[0..k]);
-    return k;
+    std.mem.sort(Hit, out[0..count], {}, hitBefore);
+    return count;
 }
 
 test "every vector finds itself with all lists probed" {
@@ -139,4 +174,11 @@ test "every vector finds itself with all lists probed" {
         for (out[0..k]) |h| found += @intFromBool(h.id == i);
     }
     try std.testing.expect(found >= 45);
+}
+
+test "build and fromParts reject zero dimension and mismatched shapes" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectError(error.InvalidShape, build(gpa, &.{ 1, 2 }, 0, 1, 1, 1, 1, 0));
+    try std.testing.expectError(error.InvalidShape, build(gpa, &.{ 1, 2, 3 }, 2, 1, 1, 1, 1, 0));
+    try std.testing.expectError(error.InvalidShape, build(gpa, &.{ 1, 2 }, 2, 0, 1, 1, 1, 0));
 }

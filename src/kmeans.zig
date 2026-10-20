@@ -18,9 +18,20 @@ fn uniform(seed: u64, i: u64) f64 {
 }
 
 pub fn dist2(a: []const f32, b: []const f32) f64 {
-    var s: f64 = 0;
-    for (a, b) |x, y| {
-        const t = @as(f64, x) - y;
+    const lanes = 4;
+    const Vec32 = @Vector(lanes, f32);
+    const Vec64 = @Vector(lanes, f64);
+    var acc: Vec64 = @splat(0.0);
+    var i: usize = 0;
+    while (i + lanes <= a.len) : (i += lanes) {
+        const va: Vec64 = @floatCast(@as(Vec32, a[i..][0..lanes].*));
+        const vb: Vec64 = @floatCast(@as(Vec32, b[i..][0..lanes].*));
+        const diff = va - vb;
+        acc = @mulAdd(Vec64, diff, diff, acc);
+    }
+    var s = @reduce(.Add, acc);
+    while (i < a.len) : (i += 1) {
+        const t = @as(f64, a[i]) - b[i];
         s += t * t;
     }
     return s;
@@ -42,22 +53,15 @@ pub fn nearest(centroids: []const f32, x: []const f32) struct { index: u32, dist
     return .{ .index = best, .dist2 = best_d };
 }
 
-/// One Lloyd iteration: assigns every point, then moves each centroid to the mean of its points.
-/// Returns the objective (sum of squared distances) of the assignment made.
-pub fn lloydStep(gpa: std.mem.Allocator, data: []const f32, d: usize, centroids: []f32, assign: []u32) Error!f64 {
+fn lloydStepBuf(data: []const f32, d: usize, centroids: []f32, assign: []u32, sums: []f64, counts: []u32) f64 {
     const n = data.len / d;
     const k = centroids.len / d;
-    if (assign.len != n) return error.DimensionMismatch;
     var objective: f64 = 0;
     for (0..n) |i| {
         const r = nearest(centroids, data[i * d ..][0..d]);
         assign[i] = r.index;
         objective += r.dist2;
     }
-    const sums = try gpa.alloc(f64, k * d);
-    defer gpa.free(sums);
-    const counts = try gpa.alloc(u32, k);
-    defer gpa.free(counts);
     @memset(sums, 0);
     @memset(counts, 0);
     for (0..n) |i| {
@@ -71,6 +75,20 @@ pub fn lloydStep(gpa: std.mem.Allocator, data: []const f32, d: usize, centroids:
         for (centroids[c * d ..][0..d], sums[c * d ..][0..d]) |*v, s| v.* = @floatCast(s * inv);
     }
     return objective;
+}
+
+/// One Lloyd iteration: assigns every point, then moves each centroid to the mean of its points.
+/// Returns the objective (sum of squared distances) of the assignment made.
+pub fn lloydStep(gpa: std.mem.Allocator, data: []const f32, d: usize, centroids: []f32, assign: []u32) Error!f64 {
+    if (d == 0 or data.len % d != 0 or centroids.len == 0 or centroids.len % d != 0) return error.DimensionMismatch;
+    const n = data.len / d;
+    const k = centroids.len / d;
+    if (assign.len != n) return error.DimensionMismatch;
+    const sums = try gpa.alloc(f64, k * d);
+    defer gpa.free(sums);
+    const counts = try gpa.alloc(u32, k);
+    defer gpa.free(counts);
+    return lloydStepBuf(data, d, centroids, assign, sums, counts);
 }
 
 /// Trains `k` centroids of width `d` on `data` with k-means++ seeding and `iters` Lloyd iterations.
@@ -101,10 +119,15 @@ pub fn train(gpa: std.mem.Allocator, data: []const f32, d: usize, k: usize, iter
         @memcpy(out[c * d ..][0..d], data[pick * d ..][0..d]);
         for (0..n) |i| closest[i] = @min(closest[i], dist2(out[c * d ..][0..d], data[i * d ..][0..d]));
     }
+    if (iters == 0) return 0;
     const assign = try gpa.alloc(u32, n);
     defer gpa.free(assign);
+    const sums = try gpa.alloc(f64, k * d);
+    defer gpa.free(sums);
+    const counts = try gpa.alloc(u32, k);
+    defer gpa.free(counts);
     var objective: f64 = 0;
-    for (0..iters) |_| objective = try lloydStep(gpa, data, d, out, assign);
+    for (0..iters) |_| objective = lloydStepBuf(data, d, out, assign, sums, counts);
     return objective;
 }
 
