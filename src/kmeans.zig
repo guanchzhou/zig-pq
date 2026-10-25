@@ -4,7 +4,11 @@
 
 const std = @import("std");
 
-pub const Error = error{ OutOfMemory, TooFewPoints, DimensionMismatch };
+pub const Error = error{ OutOfMemory, TooFewPoints, DimensionMismatch, NonFiniteValue };
+
+fn checkFinite(data: []const f32) Error!void {
+    for (data) |v| if (!std.math.isFinite(v)) return error.NonFiniteValue;
+}
 
 pub fn splitmix64(seed: u64, i: u64) u64 {
     var z = seed +% (i +% 1) *% 0x9e3779b97f4a7c15;
@@ -38,9 +42,11 @@ pub fn dist2(a: []const f32, b: []const f32) f64 {
 }
 
 /// Index of the centroid nearest to `x` among `k` row-major centroids of width `x.len`.
+/// An empty `x` is at distance 0 from centroid 0.
 pub fn nearest(centroids: []const f32, x: []const f32) struct { index: u32, dist2: f64 } {
     const d = x.len;
-    const k = centroids.len / d;
+    if (d == 0) return .{ .index = 0, .dist2 = 0 };
+    const k = @min(centroids.len / d, std.math.maxInt(u32));
     var best: u32 = 0;
     var best_d: f64 = std.math.inf(f64);
     for (0..k) |c| {
@@ -84,6 +90,8 @@ pub fn lloydStep(gpa: std.mem.Allocator, data: []const f32, d: usize, centroids:
     const n = data.len / d;
     const k = centroids.len / d;
     if (assign.len != n) return error.DimensionMismatch;
+    try checkFinite(data);
+    try checkFinite(centroids);
     const sums = try gpa.alloc(f64, k * d);
     defer gpa.free(sums);
     const counts = try gpa.alloc(u32, k);
@@ -93,9 +101,11 @@ pub fn lloydStep(gpa: std.mem.Allocator, data: []const f32, d: usize, centroids:
 
 /// Trains `k` centroids of width `d` on `data` with k-means++ seeding and `iters` Lloyd iterations.
 pub fn train(gpa: std.mem.Allocator, data: []const f32, d: usize, k: usize, iters: usize, seed: u64, out: []f32) Error!f64 {
-    if (d == 0 or data.len % d != 0 or out.len != k * d) return error.DimensionMismatch;
+    if (d == 0 or data.len % d != 0) return error.DimensionMismatch;
+    if (out.len != std.math.mul(usize, k, d) catch return error.DimensionMismatch) return error.DimensionMismatch;
     const n = data.len / d;
     if (n < k or k == 0) return error.TooFewPoints;
+    try checkFinite(data);
     const closest = try gpa.alloc(f64, n);
     defer gpa.free(closest);
     var draw: u64 = 0;
@@ -158,4 +168,37 @@ test "the objective never increases" {
         try std.testing.expect(o <= prev + 1e-9);
         prev = o;
     }
+}
+
+test "non-finite data is rejected" {
+    const gpa = std.testing.allocator;
+    var c: [2]f32 = undefined;
+    try std.testing.expectError(error.NonFiniteValue, train(gpa, &.{ 0, 1, std.math.nan(f32), 2 }, 2, 1, 1, 0, &c));
+    try std.testing.expectError(error.NonFiniteValue, train(gpa, &.{ 0, 1, std.math.inf(f32), 2 }, 2, 1, 1, 0, &c));
+    var assign: [2]u32 = undefined;
+    c = .{ 0, 0 };
+    try std.testing.expectError(error.NonFiniteValue, lloydStep(gpa, &.{ 0, 1, -std.math.inf(f32), 2 }, 2, &c, &assign));
+}
+
+test "train rejects k * d overflow" {
+    var c: [2]f32 = undefined;
+    try std.testing.expectError(error.DimensionMismatch, train(std.testing.allocator, &.{ 0, 1 }, 2, std.math.maxInt(usize) / 2 + 1, 1, 0, &c));
+}
+
+test "nearest of an empty vector" {
+    const r = nearest(&.{}, &.{});
+    try std.testing.expectEqual(@as(u32, 0), r.index);
+    try std.testing.expectEqual(@as(f64, 0), r.dist2);
+}
+
+fn trainAlloc(gpa: std.mem.Allocator, data: []const f32) !void {
+    var c: [3 * 2]f32 = undefined;
+    _ = try train(gpa, data, 2, 3, 4, 1, &c);
+    var assign: [6]u32 = undefined;
+    _ = try lloydStep(gpa, data, 2, &c, &assign);
+}
+
+test "train and lloydStep free everything on allocation failure" {
+    const data = [_]f32{ 0, 0, 1, 0, 0, 1, 5, 5, 6, 5, 5, 6 };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, trainAlloc, .{@as([]const f32, &data)});
 }

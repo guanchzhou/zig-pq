@@ -48,7 +48,7 @@ test "PQ encoding and ADC search match Faiss" {
         const s = cb.dsub();
         for (0..n) |i| {
             const x = c.data[i * c.d ..][0..c.d];
-            cb.encode(x, code);
+            try cb.encode(x, code);
             for (code, c.codes[i * c.m ..][0..c.m], 0..) |z, f, j| {
                 if (z == f) continue;
                 mismatches += 1;
@@ -62,8 +62,8 @@ test "PQ encoding and ADC search match Faiss" {
         const tab = try arena.alloc(f32, c.m * cb.ksub());
         const hits = try arena.alloc(ivf.Hit, n);
         for (0..c.queries.len / c.d) |qi| {
-            cb.table(c.queries[qi * c.d ..][0..c.d], tab);
-            for (hits, 0..) |*h, i| h.* = .{ .id = @intCast(i), .dist2 = cb.adc(tab, c.codes[i * c.m ..][0..c.m]) };
+            try cb.table(c.queries[qi * c.d ..][0..c.d], tab);
+            for (hits, 0..) |*h, i| h.* = .{ .id = @intCast(i), .dist2 = try cb.adc(tab, c.codes[i * c.m ..][0..c.m]) };
             std.mem.sort(ivf.Hit, hits, {}, struct {
                 fn f(_: void, a: ivf.Hit, b: ivf.Hit) bool {
                     return a.dist2 < b.dist2 or (a.dist2 == b.dist2 and a.id < b.id);

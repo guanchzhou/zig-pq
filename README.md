@@ -29,9 +29,9 @@ exe.root_module.addImport("pq", zpq);
 ```zig
 const cb = try zpq.pq.train(gpa, data, d, m, 8, 20, seed); // m codebooks of 256 centroids
 defer cb.deinit(gpa);
-cb.encode(x, code);              // m bytes
-cb.table(query, tab);            // m * 256 squared distances
-const d2 = cb.adc(tab, code);    // estimated squared distance
+try cb.encode(x, code);              // m bytes
+try cb.table(query, tab);            // m * 256 squared distances
+const d2 = try cb.adc(tab, code);    // estimated squared distance
 
 var ix = try zpq.ivf.build(gpa, data, d, nlist, m, 8, 20, seed);
 defer ix.deinit(gpa);

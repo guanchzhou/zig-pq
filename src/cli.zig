@@ -91,11 +91,11 @@ pub fn main(init: std.process.Init) !void {
     if (in.nlist == 0) {
         const cb = pq.train(arena, m.data, m.d, in.m, in.nbits, in.iters, seed) catch |e| fail("{s}", .{@errorName(e)});
         const codes = try arena.alloc(u8, n * in.m);
-        for (0..n) |i| cb.encode(m.data[i * m.d ..][0..m.d], codes[i * in.m ..][0..in.m]);
+        for (0..n) |i| try cb.encode(m.data[i * m.d ..][0..m.d], codes[i * in.m ..][0..in.m]);
         const tab = try arena.alloc(f32, in.m * cb.ksub());
         for (results, 0..) |*res, qi| {
-            cb.table(qs.data[qi * m.d ..][0..m.d], tab);
-            for (hits, 0..) |*h, i| h.* = .{ .id = @intCast(i), .dist2 = cb.adc(tab, codes[i * in.m ..][0..in.m]) };
+            try cb.table(qs.data[qi * m.d ..][0..m.d], tab);
+            for (hits, 0..) |*h, i| h.* = .{ .id = @intCast(i), .dist2 = try cb.adc(tab, codes[i * in.m ..][0..in.m]) };
             std.mem.sort(ivf.Hit, hits, {}, hitBefore);
             res.* = try finish(arena, hits[0..depth], in.k, in.rerank, m.data, m.d, qs.data[qi * m.d ..][0..m.d]);
         }

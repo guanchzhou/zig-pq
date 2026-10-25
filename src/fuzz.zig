@@ -46,13 +46,13 @@ fn invariants(_: void, smith: *Smith) anyerror!void {
     var code: [4]u8 = undefined;
     var rec: [16]f32 = undefined;
     var tab: [4 * 16]f32 = undefined;
-    cb.table(x[0..d], tab[0 .. m * k]);
+    try cb.table(x[0..d], tab[0 .. m * k]);
     for (0..n) |i| {
-        cb.encode(x[i * d ..][0..d], code[0..m]);
+        try cb.encode(x[i * d ..][0..d], code[0..m]);
         for (code[0..m]) |c| try std.testing.expect(c < k);
-        cb.decode(code[0..m], rec[0..d]);
+        try cb.decode(code[0..m], rec[0..d]);
         const exact: f32 = @floatCast(kmeans.dist2(rec[0..d], x[0..d]));
-        try std.testing.expect(@abs(cb.adc(tab[0 .. m * k], code[0..m]) - exact) <= 1e-4 * @max(1, exact));
+        try std.testing.expect(@abs(try cb.adc(tab[0 .. m * k], code[0..m]) - exact) <= 1e-4 * @max(1, exact));
     }
 
     // IVF stores each vector once.
